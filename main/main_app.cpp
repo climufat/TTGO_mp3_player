@@ -14,6 +14,7 @@
 #include <string>
 
 #define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
+#include "defines.h"
 
 extern "C" {
 #include "freertos/FreeRTOS.h"
@@ -53,32 +54,11 @@ extern "C" {
 void app_main(void);
 }
 
-#define TAG "main:"
-// typedef int (*http_data_cb) (http_parser*, const char *at, size_t length);
-// typedef int (*http_cb) (http_parser*);
-
-#define MOUNT_POINT "/sdcard"
-#define INDEX_FILE "/index.txt"
-#define MAX_FILES 1000
-//char* http_body;
-
-#define GPIO_OUTPUT_IO_0    GPIO_NUM_5
-#define GPIO_OUTPUT_PIN_SEL  ((1<<GPIO_OUTPUT_IO_0))
-
-#define WS2812_PIN	22
-
-/* Most development boards have "boot" button attached to GPIO0.
- * You can also change this to another pin.
- */
-#define BUTTON_GPIO_NUM_DEFAULT     0
-/* "Boot" button on GPIO0 is active low */
-#define BUTTON_WAKEUP_LEVEL_DEFAULT 0
-
 esp_err_t setup_fs(); 
 esp_err_t setup_io();
 esp_err_t setup_WM8978();
 int read_num_files();
-
+uint8_t gPlay_random_file = false; 
 
 void doSomething(int numFiles)
 {
@@ -89,7 +69,7 @@ void doSomething(int numFiles)
   if( numFiles != 0 )
   {
     uint16_t sel = esp_random() % numFiles;
-    ESP_LOGD(TAG,"Playing %03d.mp3",sel);
+    ESP_LOGD(MAIN_TAG,"Playing %03d.mp3",sel);
     sprintf (buffer, "/sdcard/%03d.mp3", sel);
     aplay_mp3(buffer);
   }
@@ -99,35 +79,93 @@ void doSomething(int numFiles)
 void app_main(void)
 {
   esp_err_t err;
+  uint8_t has_err = false; 
   int numFiles = 0;
   event_engine_init();
-  nvs_flash_init();
-  setup_fs();
-  setup_io();
-  setup_WM8978();
+  err = nvs_flash_init();
+  if( err != ESP_OK )
+  {
+    ESP_LOGE(MAIN_TAG,"init nvs flash failed (%d)",err); 
+    has_err = true; 
+  }
+
+  err = setup_fs();
+  if( err != ESP_OK )
+  {
+    ESP_LOGE(MAIN_TAG,"init file system failed (%d)",err); 
+    has_err = true; 
+  }
+
+  err = setup_io();
+  if( err != ESP_OK )
+  {
+    ESP_LOGE(MAIN_TAG,"init IO failed (%d)",err); 
+    has_err = true; 
+  }
+
+  err = setup_WM8978();
+  if( err != ESP_OK )
+  {
+    ESP_LOGE(MAIN_TAG,"init WM8978 failed (%d)",err); 
+    has_err = true; 
+  }
+
   ws2812_init(WS2812_PIN);
-  numFiles = read_num_files();
+
 
   /*print the last ram*/
   size_t free8start=heap_caps_get_free_size(MALLOC_CAP_8BIT);
   size_t free32start=heap_caps_get_free_size(MALLOC_CAP_32BIT);
-  ESP_LOGI(TAG,"free mem8bit: %d mem32bit: %d\n",free8start,free32start);
+  ESP_LOGI(MAIN_TAG,"free mem8bit: %d mem32bit: %d\n",free8start,free32start);
 
-
-
-  const uint8_t pixel_count = 64; // Number of your "pixels"
+  /* switch off the rgb led ring... no need for it now */ 
+  const uint8_t pixel_count = 19; // Number of your "pixels"
   rgbVal *pixels = (rgbVal*)malloc(sizeof(rgbVal) * pixel_count);
-  for (uint8_t i = 0; i < pixel_count; i++) 
-    pixels[i] = makeRGBVal(0, 0, 0);
-  ws2812_setColors(pixel_count, pixels);
 
-  while(1)
+
+  if( has_err == false )
   {
-    esp_sleep_enable_touchpad_wakeup();
-    doSomething(numFiles); 
-    //vTaskDelay(1000);
 
+    for (uint8_t i = 0; i < pixel_count; i++) 
+      pixels[i] = makeRGBVal(128, 0, 0);
+    ws2812_setColors(pixel_count, pixels);
+    vTaskDelay(500);
+
+    for (uint8_t i = 0; i < pixel_count; i++) 
+      pixels[i] = makeRGBVal(0, 0, 0);
+    ws2812_setColors(pixel_count, pixels);
+
+    numFiles = read_num_files();
+
+    while (1)
+    {
+      if (gPlay_random_file == true)
+      {
+        doSomething(numFiles);
+        gPlay_random_file = false;
+      }
+      esp_sleep_enable_touchpad_wakeup();
+      vTaskDelay(10); 
+      // add deep sleep to save battery ... or light sleep with BT. 
+    }
   }
+  else
+  {
+    while (1)
+    {
+      /* in case there has been an error with initialization, blink the RGB LED strip red */ 
+      for (uint8_t i = 0; i < pixel_count; i++) 
+        pixels[i] = makeRGBVal(0, 0, 0);
+      ws2812_setColors(pixel_count, pixels);
+      vTaskDelay(750);
+
+      for (uint8_t i = 0; i < pixel_count; i++) 
+        pixels[i] = makeRGBVal(0, 128, 0);
+      ws2812_setColors(pixel_count, pixels);
+      vTaskDelay(750);
+    }
+  }
+  
 }
 
 esp_err_t setup_fs()
@@ -148,10 +186,10 @@ esp_err_t setup_fs()
   {
     if (err == ESP_FAIL)
     {
-      ESP_LOGE(TAG,"Failed to mount filesystem. If you want the card to be formatted, set format_if_mount_failed = true.");
+      ESP_LOGE(MAIN_TAG,"Failed to mount filesystem. If you want the card to be formatted, set format_if_mount_failed = true.");
     } else 
     {
-      ESP_LOGE(TAG,"Failed to initialize the card (%d). Make sure SD card lines have pull-up resistors in place.", err);
+      ESP_LOGE(MAIN_TAG,"Failed to initialize the card (%d). Make sure SD card lines have pull-up resistors in place.", err);
     }
     return err;
   }
@@ -203,14 +241,13 @@ esp_err_t setup_WM8978()
 
 int read_num_files()
 {
-  ESP_LOGD(TAG,"Reading %s",MOUNT_POINT INDEX_FILE);
+  ESP_LOGD(MAIN_TAG,"Reading %s",MOUNT_POINT INDEX_FILE);
   std::ifstream input(MOUNT_POINT INDEX_FILE);
   std::string line;
   std::string word;  
   std::vector<std::string> header; 
 
   uint16_t numFiles; 
-  int n = 0;
 
   if(input.is_open() && getline(input, line)) 
   {
@@ -224,12 +261,12 @@ int read_num_files()
   }
   else
   {
-    ESP_LOGE(TAG,"Error opening header file");
+    ESP_LOGE(MAIN_TAG,"Error opening header file");
   }
 
   if( header.size() != 2 ) 
   {
-    ESP_LOGE(TAG,"Error reading header: len=%d",header.size());
+    ESP_LOGE(MAIN_TAG,"Error reading header: len=%d",header.size());
     numFiles = 0;
   }
   else
